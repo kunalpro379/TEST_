@@ -37,6 +37,8 @@ public class TunDevice implements Closeable {
           int getuid();
 
           String strerror(int errno);
+
+          int errno();
      }
 
      @Structure.FieldOrder({ "ifr_name", "ifr_flags" })
@@ -80,8 +82,11 @@ public class TunDevice implements Closeable {
           // Open the TUN device
           fd = CLibrary.INSTANCE.open(CLONE_DEV, 2); // O_RDWR = 2
           if (fd < 0) {
+               int errno = CLibrary.INSTANCE.errno();
+               String errMsg = CLibrary.INSTANCE.strerror(errno);
                throw new IOException(
-                         "Failed to open " + CLONE_DEV + ". Ensure the TUN module is loaded (modprobe tun)");
+                         "Failed to open " + CLONE_DEV + ": " + errMsg
+                                   + ". Ensure the TUN module is loaded (modprobe tun)");
           }
 
           // Configure the TUN device
@@ -90,9 +95,17 @@ public class TunDevice implements Closeable {
 
           int result = CLibrary.INSTANCE.ioctl(fd, TUNSETIFF, ifr.getPointer());
           if (result < 0) {
+               int errno = CLibrary.INSTANCE.errno();
+               String errMsg = CLibrary.INSTANCE.strerror(errno);
                CLibrary.INSTANCE.close(fd);
-               throw new IOException("Failed to configure TUN device: ioctl TUNSETIFF failed. " +
-                         "Make sure you have appropriate permissions and that the TUN module is loaded.");
+
+               if (errno == 16) { // EBUSY
+                    throw new IOException(
+                              "TUN device is busy (already in use). Try removing the existing tun0 interface first with: ip tuntap del dev tun0 mode tun");
+               } else {
+                    throw new IOException("Failed to configure TUN device: ioctl TUNSETIFF failed (" + errMsg + "). " +
+                              "Make sure you have appropriate permissions and that the TUN module is loaded.");
+               }
           }
 
           // Create Java file streams for the file descriptor
@@ -102,7 +115,7 @@ public class TunDevice implements Closeable {
                Field fdField = FileDescriptor.class.getDeclaredField("fd");
                fdField.setAccessible(true);
                fdField.setInt(fileDescriptor, fd);
-                              
+
                inputStream = new FileInputStream(fileDescriptor);
                outputStream = new FileOutputStream(fileDescriptor);
           } catch (Exception e) {
@@ -123,13 +136,29 @@ public class TunDevice implements Closeable {
      public void openExisting(String devName) throws IOException {
           // Check if we're running as root
           if (CLibrary.INSTANCE.getuid() != 0) {
-               throw new IOException("This application requires root privileges to access TUN device. Please run with sudo.");
+               throw new IOException(
+                         "This application requires root privileges to access TUN device. Please run with sudo.");
           }
-          
+
+          // First check if the device actually exists
+          try {
+               Process p = Runtime.getRuntime().exec("ip link show " + devName);
+               int exitCode = p.waitFor();
+               if (exitCode != 0) {
+                    throw new IOException("TUN device " + devName
+                              + " does not exist. Create it first with: ip tuntap add dev " + devName + " mode tun");
+               }
+          } catch (InterruptedException e) {
+               Thread.currentThread().interrupt();
+               throw new IOException("Interrupted while checking TUN device");
+          }
+
           // Open the TUN device
           fd = CLibrary.INSTANCE.open(CLONE_DEV, 2); // O_RDWR = 2
           if (fd < 0) {
-               throw new IOException("Failed to open " + CLONE_DEV + ". Ensure the TUN device exists.");
+               int errno = CLibrary.INSTANCE.errno();
+               String errMsg = CLibrary.INSTANCE.strerror(errno);
+               throw new IOException("Failed to open " + CLONE_DEV + ": " + errMsg + ". Ensure the TUN device exists.");
           }
 
           // Configure the TUN device
@@ -138,8 +167,18 @@ public class TunDevice implements Closeable {
 
           int result = CLibrary.INSTANCE.ioctl(fd, TUNSETIFF, ifr.getPointer());
           if (result < 0) {
+               int errno = CLibrary.INSTANCE.errno();
+               String errMsg = CLibrary.INSTANCE.strerror(errno);
                CLibrary.INSTANCE.close(fd);
-               throw new IOException("Failed to configure existing TUN device. The device may be in use by another process.");
+
+               if (errno == 16) { // EBUSY
+                    throw new IOException("TUN device " + devName
+                              + " is busy (already in use by another process). Check running processes with: lsof | grep "
+                              + devName);
+               } else {
+                    throw new IOException("Failed to configure existing TUN device: " + errMsg
+                              + ". The device may be in use by another process.");
+               }
           }
 
           // Create Java file streams for the file descriptor
@@ -149,7 +188,7 @@ public class TunDevice implements Closeable {
                Field fdField = FileDescriptor.class.getDeclaredField("fd");
                fdField.setAccessible(true);
                fdField.setInt(fileDescriptor, fd);
-                              
+
                inputStream = new FileInputStream(fileDescriptor);
                outputStream = new FileOutputStream(fileDescriptor);
                System.out.println("Successfully connected to existing TUN device: " + devName);
