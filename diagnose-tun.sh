@@ -1,52 +1,84 @@
 #!/bin/bash
 
-echo "===== TUN Device Diagnostic Script ====="
+# TUN device diagnostic script
 
-# Check if running as root
-if [ "$EUID" -ne 0 ]; then
-  echo "This script must be run as root (with sudo)"
-  exit 1
+echo "=== TUN Device Diagnostic Tool ==="
+echo "This script will check the status of your TUN device and report any issues."
+echo ""
+
+# Check if TUN module is loaded
+echo "1. Checking if TUN module is loaded:"
+if lsmod | grep -q "^tun"; then
+  echo "   ✅ TUN module is loaded"
+else
+  echo "   ❌ TUN module is NOT loaded"
+  echo "      Run 'sudo modprobe tun' to load it"
 fi
 
-# Check kernel modules
-echo -e "\n=== Checking if TUN module is loaded ==="
-lsmod | grep tun
-if [ $? -ne 0 ]; then
-  echo "TUN module is not loaded. Attempting to load it..."
-  modprobe tun
-  if [ $? -ne 0 ]; then
-    echo "Failed to load TUN module. This might be a kernel issue."
+# Check if /dev/net/tun exists
+echo ""
+echo "2. Checking if TUN device node exists:"
+if [ -c /dev/net/tun ]; then
+  echo "   ✅ /dev/net/tun exists"
+  
+  # Check permissions
+  PERMS=$(stat -c "%a" /dev/net/tun)
+  OWNER=$(stat -c "%U:%G" /dev/net/tun)
+  echo "   - Permissions: $PERMS"
+  echo "   - Owner: $OWNER"
+  
+  if [[ "$PERMS" == "666" || "$PERMS" == "600" || "$PERMS" == "644" ]]; then
+    echo "   ✅ Permissions look good"
   else
-    echo "Successfully loaded TUN module."
+    echo "   ⚠️ Permissions may be restrictive"
   fi
 else
-  echo "TUN module is loaded."
+  echo "   ❌ /dev/net/tun does NOT exist"
+  echo "      Run 'sudo mkdir -p /dev/net && sudo mknod /dev/net/tun c 10 200 && sudo chmod 666 /dev/net/tun'"
 fi
 
-# Check TUN device
-echo -e "\n=== Checking TUN device node ==="
-if [ -c /dev/net/tun ]; then
-  echo "/dev/net/tun device exists"
-  ls -la /dev/net/tun
+# Check for tun0 interface
+echo ""
+echo "3. Checking for tun0 interface:"
+if ip link show tun0 &>/dev/null; then
+  echo "   ✅ tun0 interface exists"
+  echo "   - Interface details:"
+  ip addr show tun0 | sed 's/^/     /'
+  
+  # Check if it's UP
+  if ip link show tun0 | grep -q "UP"; then
+    echo "   ✅ tun0 is UP"
+  else
+    echo "   ❌ tun0 is DOWN"
+    echo "      Run 'sudo ip link set tun0 up' to bring it up"
+  fi
 else
-  echo "/dev/net/tun does not exist!"
+  echo "   ❌ tun0 interface does NOT exist"
+  echo "      Run 'sudo ip tuntap add dev tun0 mode tun' to create it"
 fi
 
-# Check existing TUN interfaces
-echo -e "\n=== Checking existing TUN interfaces ==="
-ip tuntap show
+# Check for processes using the TUN device
 echo ""
-ip link show | grep tun
+echo "4. Checking for processes using the TUN device:"
+PROCS=$(lsof /dev/net/tun 2>/dev/null)
+if [ -n "$PROCS" ]; then
+  echo "   ⚠️ Found processes using the TUN device:"
+  echo "$PROCS" | sed 's/^/     /'
+  echo "   These processes might interfere with your VPN server"
+else
+  echo "   ✅ No processes are currently using the TUN device"
+fi
+
+# Check IP forwarding
 echo ""
-ip addr show | grep tun
+echo "5. Checking IP forwarding status:"
+IP_FORWARD=$(cat /proc/sys/net/ipv4/ip_forward)
+if [ "$IP_FORWARD" -eq 1 ]; then
+  echo "   ✅ IP forwarding is enabled"
+else
+  echo "   ❌ IP forwarding is disabled"
+  echo "      Run 'sudo echo 1 > /proc/sys/net/ipv4/ip_forward' to enable it"
+fi
 
-# Check processes using TUN
-echo -e "\n=== Checking processes using TUN device ==="
-lsof | grep tun
-
-# Check permissions
-echo -e "\n=== Checking permissions ==="
-ls -la /dev/net/
-id
-
-echo -e "\n=== End of Diagnostic Report ===" 
+echo ""
+echo "=== Diagnostic Complete ===" 

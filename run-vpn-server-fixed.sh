@@ -1,5 +1,7 @@
 #!/bin/bash
 
+# Improved VPN Server startup script with better error handling
+
 # Check if script is run as root
 if [ "$EUID" -ne 0 ]; then
   echo "This script must be run as root (with sudo)"
@@ -25,85 +27,81 @@ cleanup() {
 # Register the cleanup function to run on script exit
 trap cleanup EXIT INT TERM
 
-# Make sure TUN module is loaded
+echo "=== VPN Server Startup ==="
+
+# Step 1: Check if TUN module is loaded
+echo "Checking if TUN module is loaded..."
 if ! lsmod | grep -q "^tun"; then
-  echo "Loading TUN module..."
-  modprobe tun || {
-    echo "Failed to load TUN module. This might be a kernel issue."
+  echo "TUN module not loaded. Loading it now..."
+  modprobe tun
+  if [ $? -ne 0 ]; then
+    echo "Failed to load TUN module. This is required for the VPN to work."
     exit 1
-  }
-fi
-
-# Check if /dev/net/tun exists
-if [ ! -c /dev/net/tun ]; then
-  echo "TUN device not found. Attempting to create it..."
-  
-  # Try to create /dev/net directory if it doesn't exist
-  if [ ! -d /dev/net ]; then
-    mkdir -p /dev/net
-  fi
-  
-  # Try to create the TUN device node if it doesn't exist
-  if [ ! -c /dev/net/tun ]; then
-    mknod /dev/net/tun c 10 200
-    chmod 600 /dev/net/tun
   fi
 fi
 
-# Check again if the device exists
+# Step 2: Check if /dev/net/tun exists with correct permissions
+echo "Checking TUN device node..."
 if [ ! -c /dev/net/tun ]; then
-  echo "Failed to create TUN device. This might be a limitation of your environment."
-  exit 1
+  echo "TUN device not found. Creating it..."
+  mkdir -p /dev/net
+  mknod /dev/net/tun c 10 200
+  chmod 666 /dev/net/tun
+else
+  # Ensure permissions are correct
+  chmod 666 /dev/net/tun
 fi
 
-# Check for existing TUN interfaces and remove them
-echo "Checking for existing TUN interfaces..."
-if ip link show tun0 >/dev/null 2>&1; then
-  echo "Found existing tun0 interface. Removing it first..."
+# Step 3: Check for existing tun0 interface
+echo "Checking for existing tun0 interface..."
+if ip link show tun0 &>/dev/null; then
+  echo "tun0 interface already exists. Removing it..."
   ip link set tun0 down
   ip tuntap del dev tun0 mode tun
 fi
 
-# Check for processes using the TUN device
-echo "Checking for processes using TUN device..."
-if lsof | grep -q "/dev/net/tun"; then
-  echo "WARNING: Some processes are already using the TUN device:"
-  lsof | grep "/dev/net/tun"
-  echo "Attempting to continue anyway..."
+# Step 4: Check for processes using the TUN device
+echo "Checking for processes using the TUN device..."
+PROCS=$(lsof /dev/net/tun 2>/dev/null)
+if [ -n "$PROCS" ]; then
+  echo "Warning: Found processes using the TUN device:"
+  echo "$PROCS"
+  echo "These processes might interfere with the VPN server."
+  echo "Would you like to kill these processes? (y/n)"
+  read -r response
+  if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
+    lsof /dev/net/tun | awk 'NR>1 {print $2}' | xargs kill -9 2>/dev/null
+    echo "Killed processes using the TUN device."
+  fi
 fi
 
-# Create and configure TUN interface
+# Step 5: Create and configure TUN interface
 echo "Creating TUN interface..."
-ip tuntap add dev tun0 mode tun || {
-  echo "Failed to create TUN interface. This may be a permissions issue."
+ip tuntap add dev tun0 mode tun
+if [ $? -ne 0 ]; then
+  echo "Failed to create TUN interface. This may be a system limitation."
   exit 1
-}
+fi
 
-# Configure TUN interface
 echo "Configuring TUN interface..."
-ip addr add 10.0.0.1/24 dev tun0 || {
-  echo "Failed to assign IP address."
+ip addr add 10.0.0.1/24 dev tun0
+ip link set tun0 up
+
+# Verify the interface was created successfully
+if ! ip link show tun0 &>/dev/null; then
+  echo "Failed to create and configure tun0 interface."
   exit 1
-}
+fi
 
-ip link set tun0 up || {
-  echo "Failed to bring up TUN interface."
-  exit 1
-}
-
-# Set proper permissions for the TUN device
-echo "Setting TUN device permissions..."
-chmod 666 /dev/net/tun || {
-  echo "Warning: Failed to set permissions on /dev/net/tun"
-}
-
-# Enable IP forwarding
+# Step 6: Enable IP forwarding
 echo "Enabling IP forwarding..."
-echo 1 > /proc/sys/net/ipv4/ip_forward || {
-  echo "Failed to enable IP forwarding. This may impact VPN functionality."
-}
+echo 1 > /proc/sys/net/ipv4/ip_forward
 
-# Run the VPN server
+# Step 7: Set up NAT (uncomment if you want to enable internet access through the VPN)
+# echo "Setting up NAT..."
+# iptables -t nat -A POSTROUTING -s 10.0.0.0/24 -o eth0 -j MASQUERADE
+
+# Step 8: Run the VPN server
 echo "Starting VPN server..."
 java -jar target/vpn-server-1.0-SNAPSHOT-jar-with-dependencies.jar
 
