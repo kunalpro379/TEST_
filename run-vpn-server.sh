@@ -20,9 +20,9 @@ cleanup() {
   }
   
   # Remove the symbolic link if we created one
-  [ -L /dev/tun0 ] && {
-    rm -f /dev/tun0
-    echo "Removed /dev/tun0 symbolic link."
+  [ -L /dev/net/tun ] && {
+    rm -f /dev/net/tun
+    echo "Removed /dev/net/tun symbolic link."
   }
   
   exit
@@ -82,10 +82,10 @@ ip link set tun0 up || {
   exit 1
 }
 
-# Special step for WSL: create a symbolic link from /dev/tun0 to /dev/net/tun
+# Special step for WSL: create a symbolic link from /dev/net/tun to /dev/net/tun
 # This gives Java a direct path to access the device
 echo "Creating symbolic link for Java to access the TUN device..."
-ln -sf /dev/net/tun /dev/tun0 || {
+ln -sf /dev/net/tun /dev/net/tun || {
   echo "Warning: Failed to create symbolic link. This may not be a problem if the device works correctly."
 }
 
