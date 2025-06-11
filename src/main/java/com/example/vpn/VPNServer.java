@@ -77,30 +77,8 @@ public class VPNServer {
     public void run() throws IOException {
         System.out.println("VPN Server running. Press Ctrl+C to stop.");
 
-        boolean isDummyDevice = false;
-
-        // Check if we're using a dummy device (reading from /dev/null will return -1)
-        int testRead = tunDevice.read(buffer.array());
-        if (testRead < 0) {
-            System.out.println("Detected dummy TUN device. Operating in limited mode.");
-            isDummyDevice = true;
-        }
-
         // The server loop
         while (true) {
-            if (isDummyDevice) {
-                // If we have a dummy device, we can't read from it
-                // Just sleep to avoid busy waiting
-                try {
-                    Thread.sleep(1000);
-                    System.out.println("Running in limited mode. Real TUN functionality not available.");
-                    continue;
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    break;
-                }
-            }
-
             // Read packet from TUN device
             int bytesRead = tunDevice.read(buffer.array());
             if (bytesRead <= 0) {

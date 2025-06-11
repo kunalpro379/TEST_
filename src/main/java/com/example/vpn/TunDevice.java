@@ -74,16 +74,14 @@ public class TunDevice implements Closeable {
           java.io.File tunFile = new java.io.File(CLONE_DEV);
           if (!tunFile.exists()) {
                throw new IOException("TUN device " + CLONE_DEV + " does not exist. " +
-                         "This might be a limitation of your WSL environment. " +
-                         "Make sure to run the setup script first.");
+                         "Make sure the TUN module is loaded (modprobe tun)");
           }
 
           // Open the TUN device
           fd = CLibrary.INSTANCE.open(CLONE_DEV, 2); // O_RDWR = 2
           if (fd < 0) {
                throw new IOException(
-                         "Failed to open " + CLONE_DEV + ". Ensure the TUN module is loaded (modprobe tun) " +
-                                   "or that the device has been created in WSL.");
+                         "Failed to open " + CLONE_DEV + ". Ensure the TUN module is loaded (modprobe tun)");
           }
 
           // Configure the TUN device
@@ -94,14 +92,19 @@ public class TunDevice implements Closeable {
           if (result < 0) {
                CLibrary.INSTANCE.close(fd);
                throw new IOException("Failed to configure TUN device: ioctl TUNSETIFF failed. " +
-                         "In WSL, this might require special configuration. " +
-                         "Check if the TUN interface exists with 'ip link show " + devName + "'");
+                         "Make sure you have appropriate permissions and that the TUN module is loaded.");
           }
 
           // Create Java file streams for the file descriptor
           try {
-               inputStream = new FileInputStream(getFileDescriptor(fd));
-               outputStream = new FileOutputStream(getFileDescriptor(fd));
+               // Use legacy approach for FileDescriptor that works on most Linux JVMs
+               FileDescriptor fileDescriptor = new FileDescriptor();
+               Field fdField = FileDescriptor.class.getDeclaredField("fd");
+               fdField.setAccessible(true);
+               fdField.setInt(fileDescriptor, fd);
+                              
+               inputStream = new FileInputStream(fileDescriptor);
+               outputStream = new FileOutputStream(fileDescriptor);
           } catch (Exception e) {
                CLibrary.INSTANCE.close(fd);
                throw new IOException("Failed to create streams for TUN device: " + e.getMessage(), e);
@@ -123,18 +126,35 @@ public class TunDevice implements Closeable {
                throw new IOException("This application requires root privileges to access TUN device. Please run with sudo.");
           }
           
-          // For WSL environments, we'll use dummy streams since we can't directly
-          // control the TUN device due to WSL limitations
-          System.out.println("Cannot directly control the TUN device in WSL. Using dummy streams.");
-          
+          // Open the TUN device
+          fd = CLibrary.INSTANCE.open(CLONE_DEV, 2); // O_RDWR = 2
+          if (fd < 0) {
+               throw new IOException("Failed to open " + CLONE_DEV + ". Ensure the TUN device exists.");
+          }
+
+          // Configure the TUN device
+          IfreqFlags ifr = new IfreqFlags(devName);
+          ifr.ifr_flags = (short) (IFF_TUN | IFF_NO_PI);
+
+          int result = CLibrary.INSTANCE.ioctl(fd, TUNSETIFF, ifr.getPointer());
+          if (result < 0) {
+               CLibrary.INSTANCE.close(fd);
+               throw new IOException("Failed to configure existing TUN device. The device may be in use by another process.");
+          }
+
+          // Create Java file streams for the file descriptor
           try {
-               // Create dummy streams that will simulate a TUN device
-               // These will not actually read/write to the network, but will allow the program to run
-               inputStream = new FileInputStream("/dev/null");
-               outputStream = new FileOutputStream("/dev/null");
-               System.out.println("Created dummy streams for TUN device: " + devName);
-               System.out.println("Note: VPN functionality will be limited. This is a compatibility mode for WSL.");
+               // Use legacy approach for FileDescriptor that works on most Linux JVMs
+               FileDescriptor fileDescriptor = new FileDescriptor();
+               Field fdField = FileDescriptor.class.getDeclaredField("fd");
+               fdField.setAccessible(true);
+               fdField.setInt(fileDescriptor, fd);
+                              
+               inputStream = new FileInputStream(fileDescriptor);
+               outputStream = new FileOutputStream(fileDescriptor);
+               System.out.println("Successfully connected to existing TUN device: " + devName);
           } catch (Exception e) {
+               CLibrary.INSTANCE.close(fd);
                throw new IOException("Failed to create streams for TUN device: " + e.getMessage(), e);
           }
      }
@@ -178,28 +198,6 @@ public class TunDevice implements Closeable {
           if (fd >= 0) {
                CLibrary.INSTANCE.close(fd);
                fd = -1;
-          }
-     }
-
-     /**
-      * Create a FileDescriptor from an integer file descriptor
-      */
-     private static FileDescriptor getFileDescriptor(int fd) {
-          try {
-               // In Java 17+, we can't use reflection to access private fields directly
-               // Instead, we'll use a workaround
-
-               // Create a process to keep the file descriptor alive
-               Process process = new ProcessBuilder("sleep", "1").start();
-
-               // Get a FileDescriptor from a pipe
-               // This is a dummy FileDescriptor that we'll use instead
-               FileDescriptor dummyFd = new FileOutputStream("/dev/null").getFD();
-
-               System.out.println("Created dummy FileDescriptor for TUN device");
-               return dummyFd;
-          } catch (Exception e) {
-               throw new RuntimeException("Failed to create FileDescriptor", e);
           }
      }
 }
